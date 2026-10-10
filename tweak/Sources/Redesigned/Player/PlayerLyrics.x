@@ -391,6 +391,7 @@ static void replace(void) {
         SGLog(@"redesign player: the lyrics have the player's view %.0fx%.0f", host.bounds.size.width, host.bounds.size.height);
     }
     replace();
+    SGRPlayerFooterUpdate(host);
 }
 
 // The bar morphs back out of a full size cover as the player closes, so the thumbnail is put away first.

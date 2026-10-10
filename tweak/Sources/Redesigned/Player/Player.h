@@ -58,6 +58,11 @@ void SGRPlayerToggleLyrics(void);
 // (PlayerFooter.x). It returns at once when nothing changed.
 void SGRPlayerLyricsChanged(void);
 
+// Called whenever the full player lays out, to ensure the footer has its lyrics button in any mode
+// (normal or DJ mode).
+void SGRPlayerFooterUpdate(UIView *playerHost);
+
 // Alpha 0, no touches, hidden from accessibility, set again on every call: for Spotify's Swift views,
 // which SGRSuppress cannot keep (PlayerControls.x).
 void SGRPlayerVanish(UIView *view);
+

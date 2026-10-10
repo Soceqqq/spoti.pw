@@ -39,7 +39,7 @@ static const CGFloat kRowAboveSafeArea = 20, kRowMinBottom = 34;
 // and below them even out instead of all the room opening under them.
 static const CGFloat kControlsShare = 0.3;
 
-static char kConnectKey, kShareKey, kTrimmerKey, kQueueKey, kLyricsGlyphKey, kReachKey;
+static char kConnectKey, kShareKey, kTrimmerKey, kQueueKey, kLyricsGlyphKey, kReachKey, kObserveLayoutKey, kBottomStackKey;
 static __weak SGRGlyphButton *sg_lyricsGlyph;
 
 // The view the footer's stack view arranges around `view`.
@@ -184,55 +184,184 @@ static void lowerRow(UIView *row) {
     });
 }
 
+static void layoutFooter(UIView *host) {
+    if (!host) return;
+    UIStackView *row = SGRowIn(host);
+    [row layoutIfNeeded];
+    CGFloat width = host.bounds.size.width;
+    if (width < 100) return;
+    CGFloat middleY = CGRectGetMidY(host.bounds);
+    BOOL rtl = host.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+
+    UIView *queue = SGRFindByIdentifier(host, @"QueueButtonNowPlaying", &kQueueKey);
+    // When the queue button is present, we are in normal music playback.
+    // In DJ mode, Spotify replaces the queue button with the DJ circle button.
+    BOOL isDJ = (queue == nil || queue.hidden || queue.alpha < 0.01);
+
+    if (!isDJ) {
+        // Normal music mode: 3 glyphs (Lyrics, Connect, Queue)
+        UIView *share = SGRFindByIdentifier(host, @"ShareButtonNowPlayingView", &kShareKey);
+        // The arranged view goes too: a view that takes touches swallows them even with nothing on it.
+        SGRPlayerVanish(share);
+        SGRPlayerVanish(arrangedAround(share, host));
+        // Spotify's clip button, hidden in every clean tree, would turn up where the queue moves to.
+        UIView *trimmer = SGRFindByIdentifier(host, @"nowplaying-npv-media-trimmer-navigation-button", &kTrimmerKey);
+        SGRPlayerVanish(trimmer);
+        SGRPlayerVanish(arrangedAround(trimmer, host));
+
+        SGRGlyphButton *lyrics = lyricsGlyphIn(host);
+        lyrics.bounds = CGRectMake(0, 0, 44, 44);
+        lyrics.center = CGPointMake(round(width * (rtl ? kTrailing : kLeading)), middleY);
+        [host bringSubviewToFront:lyrics];
+        SGRPlayerLyricsChanged();
+
+        UIView *connect = SGRFindByIdentifier(host, @"Components.ConnectButtonOutputSwitcher", &kConnectKey);
+        UIView *glyph = connectGlyphIn(connect);
+        for (UIView *view = glyph.superview; view && view != connect; view = view.superview) {
+            for (UIView *sibling in view.subviews) {
+                if ([NSStringFromClass(sibling.class) containsString:@"MarqueeLabel"]) SGRPlayerVanish(sibling);
+            }
+        }
+        UIView *pinned = glyph ?: connect;
+        CGFloat connectFrom = moveTo(arrangedAround(connect, host), pinned, CGPointMake(CGRectGetMidX(pinned.bounds), CGRectGetMidY(pinned.bounds)), host, round(width * kMiddle));
+
+        CGFloat queueFrom = moveTo(arrangedAround(queue, host), queue, CGPointMake(CGRectGetMidX(queue.bounds), CGRectGetMidY(queue.bounds)), host, round(width * (rtl ? kLeading : kTrailing)));
+
+        lowerRow(host);
+
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            SGLog(@"redesign player: footer lyrics at %.0f, connect %.0f (%@) to %.0f, queue %.0f to %.0f, share %@", lyrics.center.x,
+                  connectFrom, glyph ? @"glyph" : @"button", round(width * kMiddle), queueFrom, round(width * (rtl ? kLeading : kTrailing)), share ? @"gone" : @"not found");
+        });
+    } else {
+        // DJ mode: Spotify provides Connect on the left, Share in the middle-right, and the DJ circle button on the far right.
+        // We add the lyrics button right in the bottom row so lyrics can be toggled!
+        UIView *connect = SGRFindByIdentifier(host, @"Components.ConnectButtonOutputSwitcher", &kConnectKey);
+        UIView *glyph = connectGlyphIn(connect);
+        UIView *share = SGRFindByIdentifier(host, @"ShareButtonNowPlayingView", &kShareKey);
+
+        // Find the DJ button or trailing-most button
+        __block UIView *dj = nil;
+        for (UIView *item in row ? row.arrangedSubviews : host.subviews) {
+            if (item.hidden || item.alpha < 0.01 || item.bounds.size.width < 20) continue;
+            if (item == connect || item == arrangedAround(connect, host)) continue;
+            if (item == share || item == arrangedAround(share, host)) continue;
+            dj = item;
+        }
+
+        SGRGlyphButton *lyrics = lyricsGlyphIn(host);
+        lyrics.bounds = CGRectMake(0, 0, 44, 44);
+
+        // Calculate horizontal position for lyrics:
+        // Connect is on the leading side (~40pt).
+        // If share is present (~310pt), lyrics sits midway between connect and share (~175pt).
+        // If share is not present, lyrics sits midway between connect and dj button.
+        UIView *leadingView = glyph ?: connect;
+        CGFloat connectX = leadingView ? CGRectGetMidX(SGFrameIn(leadingView, host)) : round(width * (rtl ? 0.85 : 0.15));
+        CGFloat nextX = 0;
+        if (share && !share.hidden && share.alpha > 0.01) {
+            nextX = CGRectGetMidX(SGFrameIn(share, host));
+        } else if (dj) {
+            nextX = CGRectGetMidX(SGFrameIn(dj, host));
+        } else {
+            nextX = round(width * (rtl ? 0.15 : 0.85));
+        }
+
+        CGFloat lyricsX = round((connectX + nextX) / 2.0);
+        if (lyricsX < 60 || lyricsX > width - 60) {
+            lyricsX = round(width * (rtl ? 0.55 : 0.45));
+        }
+
+        lyrics.center = CGPointMake(lyricsX, middleY);
+        [host bringSubviewToFront:lyrics];
+        SGRPlayerLyricsChanged();
+
+        lowerRow(host);
+
+        static dispatch_once_t onceDJ;
+        dispatch_once(&onceDJ, ^{
+            SGLog(@"redesign player: DJ footer lyrics added at %.0f (connect %.0f, next %.0f)", lyricsX, connectX, nextX);
+        });
+    }
+
+    if (!objc_getAssociatedObject(host, &kObserveLayoutKey)) {
+        objc_setAssociatedObject(host, &kObserveLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        SGRObserveLayout(host, ^(UIView *v) {
+            layoutFooter(v);
+        });
+    }
+}
+
+void SGRPlayerFooterUpdate(UIView *playerHost) {
+    if (!playerHost) return;
+    UIView *bottom = SGRFindByIdentifier(playerHost, @"npv.bottomStackView", &kBottomStackKey);
+    UIView *footerView = nil;
+
+    // Find through Connect button
+    UIView *connect = SGRFindByIdentifier(playerHost, @"Components.ConnectButtonOutputSwitcher", &kConnectKey);
+    if (connect) {
+        for (UIView *v = connect; v && v != playerHost; v = v.superview) {
+            if (bottom && v.superview == bottom) { footerView = v; break; }
+            if ([v.superview isKindOfClass:UIStackView.class] && v.superview.superview == bottom) { footerView = v.superview; break; }
+        }
+    }
+
+    // Fallback: bottom stack view's last arranged subview
+    if (!footerView && [bottom isKindOfClass:UIStackView.class]) {
+        UIStackView *bottomStack = (UIStackView *)bottom;
+        footerView = bottomStack.arrangedSubviews.lastObject;
+    }
+
+    if (footerView) {
+        layoutFooter(footerView);
+    }
+}
+
 %hook _TtC20NowPlaying_ModesImpl18FooterElementsUnit
 - (void)viewDidLayoutSubviews {
     %orig;
     UIView *host = ((UIViewController *)self).viewIfLoaded;
-    if (!host) return;
-    // The unit lays out before its row does, and the moves are measured from where the row put things.
-    [SGRowIn(host) layoutIfNeeded];
-    CGFloat width = host.bounds.size.width, middleY = CGRectGetMidY(host.bounds);
-    BOOL rtl = host.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
-
-    UIView *share = SGRFindByIdentifier(host, @"ShareButtonNowPlayingView", &kShareKey);
-    // The arranged view goes too: a view that takes touches swallows them even with nothing on it.
-    SGRPlayerVanish(share);
-    SGRPlayerVanish(arrangedAround(share, host));
-    // Spotify's clip button, hidden in every clean tree, would turn up where the queue moves to.
-    UIView *trimmer = SGRFindByIdentifier(host, @"nowplaying-npv-media-trimmer-navigation-button", &kTrimmerKey);
-    SGRPlayerVanish(trimmer);
-    SGRPlayerVanish(arrangedAround(trimmer, host));
-
-    SGRGlyphButton *lyrics = lyricsGlyphIn(host);
-    lyrics.bounds = CGRectMake(0, 0, 44, 44);
-    lyrics.center = CGPointMake(round(width * (rtl ? kTrailing : kLeading)), middleY);
-    SGRPlayerLyricsChanged();
-
-    UIView *connect = SGRFindByIdentifier(host, @"Components.ConnectButtonOutputSwitcher", &kConnectKey);
-    UIView *glyph = connectGlyphIn(connect);
-    for (UIView *view = glyph.superview; view && view != connect; view = view.superview) {
-        for (UIView *sibling in view.subviews) {
-            if ([NSStringFromClass(sibling.class) containsString:@"MarqueeLabel"]) SGRPlayerVanish(sibling);
-        }
-    }
-    UIView *pinned = glyph ?: connect;
-    CGFloat connectFrom = moveTo(arrangedAround(connect, host), pinned, CGPointMake(CGRectGetMidX(pinned.bounds), CGRectGetMidY(pinned.bounds)), host, round(width * kMiddle));
-
-    UIView *queue = SGRFindByIdentifier(host, @"QueueButtonNowPlaying", &kQueueKey);
-    CGFloat queueFrom = moveTo(arrangedAround(queue, host), queue, CGPointMake(CGRectGetMidX(queue.bounds), CGRectGetMidY(queue.bounds)), host, round(width * (rtl ? kLeading : kTrailing)));
-
-    lowerRow(host);
-
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        SGLog(@"redesign player: footer lyrics at %.0f, connect %.0f (%@) to %.0f, queue %.0f to %.0f, share %@", lyrics.center.x,
-              connectFrom, glyph ? @"glyph" : @"button", round(width * kMiddle), queueFrom, round(width * (rtl ? kLeading : kTrailing)), share ? @"gone" : @"not found");
-    });
+    if (host) layoutFooter(host);
 }
 %end
+
+static void hookPossibleDJUnits(void) {
+    int numClasses = objc_getClassList(NULL, 0);
+    if (numClasses <= 0) return;
+    Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+    if (!classes) return;
+    numClasses = objc_getClassList(classes, numClasses);
+    SEL sel = @selector(viewDidLayoutSubviews);
+    for (int i = 0; i < numClasses; i++) {
+        Class cls = classes[i];
+        const char *cname = class_getName(cls);
+        if (!cname) continue;
+        if (strstr(cname, "DJ") && (strstr(cname, "Unit") || strstr(cname, "Footer"))) {
+            if ([cls isSubclassOfClass:UIViewController.class]) {
+                Method m = class_getInstanceMethod(cls, sel);
+                if (m) {
+                    IMP orig = method_getImplementation(m);
+                    IMP swizzled = imp_implementationWithBlock(^(UIViewController *_self) {
+                        ((void (*)(id, SEL))orig)(_self, sel);
+                        UIView *v = _self.viewIfLoaded;
+                        if (v) layoutFooter(v);
+                    });
+                    if (!class_addMethod(cls, sel, swizzled, method_getTypeEncoding(m))) {
+                        method_setImplementation(m, swizzled);
+                    }
+                    SGLog(@"redesign player: hooked potential DJ unit %s", cname);
+                }
+            }
+        }
+    }
+    free(classes);
+}
 
 %ctor {
     if (!SGRedesignedUI()) return;
     %init;
     SGRequireClasses(@[@"_TtC20NowPlaying_ModesImpl18FooterElementsUnit"]);
+    hookPossibleDJUnits();
 }
+
