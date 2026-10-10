@@ -176,13 +176,29 @@ static UIView *currentDurationElement(UIView *host) {
 }
 
 static UIView *currentTitleElement(UIView *host, UIView *info) {
-    if (sg_titleElement) return sg_titleElement;
+    if (sg_titleElement && sg_titleElement.window) return sg_titleElement;
     UIView *label = SGRFindByIdentifier(info ?: host, @"now-playing-title-label", NULL);
     if (!label) return nil;
     for (UIView *v = label; v && v != host; v = v.superview) {
-        if ([v.superview isKindOfClass:UIStackView.class]) return v;
+        if ([v.superview isKindOfClass:UIStackView.class]) {
+            sg_titleElement = v;
+            return v;
+        }
     }
     return label;
+}
+
+static UIView *currentAddButton(UIView *host) {
+    if (!host) return nil;
+    UIView *add = SGRFindByIdentifier(host, @"Components.UI.AddToButton", NULL);
+    if (add) return add;
+    __block UIView *found = nil;
+    SGForEachView(host, ^(UIView *v) {
+        if (!found && [NSStringFromClass(v.class) containsString:@"AddToButton"]) {
+            found = v;
+        }
+    });
+    return found;
 }
 
 static SGRLyricsLayout layoutIn(UIView *host) {
@@ -245,14 +261,29 @@ static SGRLyricsLayout layoutIn(UIView *host) {
 // Where the row's trailing controls start, in the unit's coordinates: the nearest arranged view on the
 // trailing side of the title that is still there to be seen. The title may not reach it.
 static CGFloat trailingEdgeIn(UIView *info) {
-    UIView *title = sg_titleElement, *row = title.superview;
-    if (!title || !row) return CGFLOAT_MAX;
+    UIView *title = currentTitleElement(sg_host, info);
+    if (!title || !info) return CGFLOAT_MAX;
     CGFloat titleLeft = CGRectGetMinX(untransformed(title, info));
-    CGFloat limit = CGRectGetMaxX(SGFrameIn(row, info));
-    for (UIView *view in row.subviews) {
-        if (view == title || view.hidden || view.alpha < 0.01 || view.bounds.size.width < 1) continue;
-        CGFloat x = CGRectGetMinX(SGFrameIn(view, info));
-        if (x > titleLeft && x < limit) limit = x;
+    CGFloat limit = CGFLOAT_MAX;
+
+    UIView *add = currentAddButton(info);
+    if (add && !add.hidden && add.alpha > 0.01) {
+        limit = CGRectGetMinX(SGFrameIn(add, info));
+    }
+
+    UIView *row = title.superview;
+    if (row) {
+        CGFloat rowLimit = CGRectGetMaxX(SGFrameIn(row, info));
+        if (limit > rowLimit) limit = rowLimit;
+        for (UIView *view in row.subviews) {
+            if (view == title || view.hidden || view.alpha < 0.01 || view.bounds.size.width < 1) continue;
+            CGFloat x = CGRectGetMinX(SGFrameIn(view, info));
+            if (x > titleLeft && x < limit) limit = x;
+        }
+    }
+
+    if (limit == CGFLOAT_MAX) {
+        limit = info.bounds.size.width - SGRSideMargin;
     }
     return limit;
 }
@@ -298,9 +329,19 @@ static void placeTitleRow(SGRLyricsLayout l) {
     if (!title) return;
     CGAffineTransform slide = CGAffineTransformMakeTranslation(round(shift), 0);
     if (!CGAffineTransformEqualToTransform(title.transform, slide)) title.transform = slide;
+
+    UIView *add = currentAddButton(info ?: sg_host);
+    if (add) {
+        add.alpha = sg_open ? 0 : 1;
+        add.userInteractionEnabled = !sg_open;
+    }
+
     // Closed it reaches as far as Spotify meant it to; moved, only as far as the controls it moved towards.
     CGFloat room = CGFLOAT_MAX;
-    if (sg_open) room = trailingEdgeIn(info) - kTitleGap - (CGRectGetMinX(untransformed(title, info)) + shift);
+    if (sg_open) {
+        CGFloat edge = (add && add.alpha > 0.01) ? trailingEdgeIn(info) : (info.bounds.size.width - SGRSideMargin);
+        room = edge - kTitleGap - (CGRectGetMinX(untransformed(title, info)) + shift);
+    }
     clipTitle(title, room);
 }
 
@@ -392,11 +433,16 @@ static void setOpen(BOOL open, BOOL animated) {
         setCoverHidden(YES);
     }
 
+    UIView *add = currentAddButton(host);
     void (^move)(void) = ^{
         overlay.thumb.transform = open ? away : CGAffineTransformIdentity;
         overlay.cover.layer.cornerRadius = thumbRadius(l, open);
         placeTitleRow(l);
         sg_floating.viewIfLoaded.alpha = open ? 0 : 1;
+        if (add) {
+            add.alpha = open ? 0 : 1;
+            add.userInteractionEnabled = !open;
+        }
     };
     void (^show)(void) = ^{
         overlay.stage.alpha = open ? 1 : 0;
@@ -407,6 +453,10 @@ static void setOpen(BOOL open, BOOL animated) {
         sg_moving = NO;
         if (sg_open) return;   // opened again while it was going away
         setCoverHidden(NO);
+        if (add) {
+            add.alpha = 1;
+            add.userInteractionEnabled = YES;
+        }
         [overlay removeFromSuperview];
     };
 
@@ -446,6 +496,11 @@ static void replace(void) {
     if (sg_open && !l.ok) return;
     placeTitleRow(l);
     sg_floating.viewIfLoaded.alpha = sg_open ? 0 : 1;
+    UIView *add = currentAddButton(host);
+    if (add) {
+        add.alpha = sg_open ? 0 : 1;
+        add.userInteractionEnabled = !sg_open;
+    }
     if (!sg_open) return;
     SGRPlayerLyricsOverlay *overlay = objc_getAssociatedObject(host, &kOverlayKey);
     if (!overlay.superview) return;
