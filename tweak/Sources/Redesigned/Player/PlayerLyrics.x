@@ -349,8 +349,10 @@ static CGFloat thumbRadius(SGRLyricsLayout l, BOOL open) {
     return scale > 0 ? SGRRadiusCover / scale : SGRRadiusArtwork;
 }
 
-static UIView *activeCoverView(void) {
-    return SGRPlayerCoverList() ?: showingTilt();
+static void setCoverHidden(BOOL hidden) {
+    UIView *list = SGRPlayerCoverList();
+    if (list) list.alpha = hidden ? 0 : 1;
+    SGRPlayerSetCoverHidden(hidden);
 }
 
 static void setOpen(BOOL open, BOOL animated) {
@@ -365,17 +367,13 @@ static void setOpen(BOOL open, BOOL animated) {
         SGLog(@"redesign player: the lyrics have nowhere to go (stage %.0fx%.0f, lift %.0f)", l.stage.size.width, l.stage.size.height, l.lift);
         return;
     }
-    UIImage *picture = SGRNowPlayingArtwork(NULL, NULL);
+    __block UIImage *picture = SGRNowPlayingArtwork(NULL, NULL);
     if (!picture) {
-        UIView *cov = activeCoverView();
-        if ([cov isKindOfClass:UIImageView.class]) picture = ((UIImageView *)cov).image;
-        if (!picture) {
-            SGForEachView(host, ^(UIView *v) {
-                if (!picture && [v isKindOfClass:UIImageView.class] && v.bounds.size.width > 80) {
-                    picture = ((UIImageView *)v).image;
-                }
-            });
-        }
+        SGForEachView(host, ^(UIView *v) {
+            if (!picture && [v isKindOfClass:UIImageView.class] && v.bounds.size.width > 80) {
+                picture = ((UIImageView *)v).image;
+            }
+        });
     }
     sg_open = open;
     SGRPlayerLyricsChanged();
@@ -391,8 +389,7 @@ static void setOpen(BOOL open, BOOL animated) {
         overlay.stage.alpha = 0;
         overlay.stage.transform = CGAffineTransformMakeScale(kLyricsEnterScale, kLyricsEnterScale);
         [overlay lyrics];
-        UIView *coverView = activeCoverView();
-        if (coverView) coverView.alpha = 0;
+        setCoverHidden(YES);
     }
 
     void (^move)(void) = ^{
@@ -409,8 +406,7 @@ static void setOpen(BOOL open, BOOL animated) {
     void (^settled)(BOOL) = ^(BOOL finished) {
         sg_moving = NO;
         if (sg_open) return;   // opened again while it was going away
-        UIView *coverView = activeCoverView();
-        if (coverView) coverView.alpha = 1;
+        setCoverHidden(NO);
         [overlay removeFromSuperview];
     };
 
@@ -457,8 +453,7 @@ static void replace(void) {
     overlay.thumb.transform = thumbTransform(l);
     overlay.cover.layer.cornerRadius = thumbRadius(l, YES);
     overlay.lyrics.frame = overlay.stage.bounds;
-    UIView *coverView = activeCoverView();
-    if (coverView) coverView.alpha = 0;
+    setCoverHidden(YES);
 }
 
 #pragma mark - the units
