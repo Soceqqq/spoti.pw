@@ -40,7 +40,7 @@ static const CGFloat kRowAboveSafeArea = 20, kRowMinBottom = 34;
 // and below them even out instead of all the room opening under them.
 static const CGFloat kControlsShare = 0.3;
 
-static char kConnectKey, kShareKey, kTrimmerKey, kQueueKey, kLyricsGlyphKey, kReachKey, kBottomStackKey, kDJLyricsKey;
+static char kConnectKey, kShareKey, kTrimmerKey, kQueueKey, kLyricsGlyphKey, kReachKey, kDJLyricsKey;
 static __weak SGRGlyphButton *sg_lyricsGlyph;
 
 // The view the footer's stack view arranges around `view`.
