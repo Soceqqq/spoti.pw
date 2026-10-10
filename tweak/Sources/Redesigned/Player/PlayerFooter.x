@@ -73,7 +73,6 @@ void SGRPlayerLyricsChanged(void) {
     if (!glyph) return;
     BOOL hasLyrics = SGRPlayerLyricsAvailable();
     BOOL open = SGRPlayerLyricsOpen();
-    BOOL wasOpen = [glyph.glyph.symbol isEqualToString:kLyricsSymbolOpen];
 
     // Lyrics turn up once the player has fetched them, well after the footer laid out: a fade, not a pop.
     // While the player opens or closes the glyph and the lyrics come and go together, so nothing animates.
