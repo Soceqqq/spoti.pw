@@ -88,6 +88,7 @@ static void keep(NSString *track, NSArray<SGKaraokeLine *> *lines) {
         }
     }
     sg_lyrics[track] = lines;
+    [NSNotificationCenter.defaultCenter postNotificationName:@"SGKaraokeLyricsDidUpdateNotification" object:track];
 }
 
 void SGKaraokeKeepLines(NSString *track, NSArray<SGKaraokeLine *> *lines) {

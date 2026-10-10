@@ -21,6 +21,7 @@
 // id=QueueButtonNowPlaying 47x32.
 #import "Core/SGCore.h"
 #import "Redesigned/Kit/SGRKit.h"
+#import "Shared/Lyrics/Lyrics.h"
 #import "Player.h"
 
 static const CGFloat kLyricsGlyphSize = 20;
@@ -70,16 +71,28 @@ static CGFloat moveTo(UIView *arranged, UIView *view, CGPoint point, UIView *hos
 void SGRPlayerLyricsChanged(void) {
     SGRGlyphButton *glyph = sg_lyricsGlyph;
     if (!glyph) return;
-    BOOL enabled = SGRPlayerLyricsAvailable() || SGRPlayerLyricsOpen(), open = SGRPlayerLyricsOpen();
+    BOOL hasLyrics = SGRPlayerLyricsAvailable();
+    BOOL open = SGRPlayerLyricsOpen();
     BOOL wasOpen = [glyph.glyph.symbol isEqualToString:kLyricsSymbolOpen];
-    if (glyph.enabled == enabled && wasOpen == open) return;
+
     // Lyrics turn up once the player has fetched them, well after the footer laid out: a fade, not a pop.
     // While the player opens or closes the glyph and the lyrics come and go together, so nothing animates.
     BOOL animated = glyph.window && !SGRPlayerIsTransitioning();
     [glyph.glyph setSymbol:open ? kLyricsSymbolOpen : kLyricsSymbol animated:animated];
     void (^mark)(void) = ^{
-        glyph.enabled = enabled;
-        glyph.glyph.tintColor = open ? SGRPrimary() : SGRSecondary();
+        glyph.enabled = YES;
+        if (open) {
+            glyph.alpha = 1.0;
+            glyph.glyph.tintColor = UIColor.whiteColor;
+        } else if (hasLyrics) {
+            // Lyrics available: make the icon prominently bright!
+            glyph.alpha = 1.0;
+            glyph.glyph.tintColor = UIColor.whiteColor;
+        } else {
+            // Lyrics not yet available / loading: dimmed
+            glyph.alpha = 0.45;
+            glyph.glyph.tintColor = SGRSecondary();
+        }
     };
     if (animated) SGRAnimate(SGRMotionFade, mark, nil);
     else mark();
@@ -90,7 +103,13 @@ static SGRGlyphButton *lyricsGlyphIn(UIView *host) {
     if (!glyph) {
         glyph = [SGRGlyphButton buttonWithSymbol:kLyricsSymbol pointSize:kLyricsGlyphSize title:@"Lyrics"];
         glyph.glyph.tintColor = SGRSecondary();
+        glyph.userInteractionEnabled = YES;
         glyph.onTap = ^{ SGRPlayerToggleLyrics(); };
+
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:glyph action:@selector(tapped)];
+        tap.cancelsTouchesInView = YES;
+        [glyph addGestureRecognizer:tap];
+
         objc_setAssociatedObject(host, &kLyricsGlyphKey, glyph, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (glyph.superview != host) [host addSubview:glyph];
@@ -271,16 +290,26 @@ void SGRPlayerFooterUpdate(UIView *playerHost) {
         return;
     }
 
+    // Prefetch lyrics for current track if needed
+    NSString *trackID = SGKaraokePlayingTrack();
+    if (trackID && !SGKaraokeLinesForTrack(trackID)) {
+        SGKaraokeRequestLyrics(trackID);
+    }
+
     // DJ mode: Spotify has Connect on the left, and Share + DJ on the right.
     // We add the lyrics button in the middle space between Connect and Share/DJ.
     CGFloat width = footerView.bounds.size.width;
     if (width < 100) return;
-    CGFloat middleY = CGRectGetMidY(footerView.bounds);
+
+    footerView.clipsToBounds = NO;
+    if (bottomStack) bottomStack.clipsToBounds = NO;
+
+    CGRect connectFrame = SGFrameIn(connect, footerView);
+    CGFloat middleY = (connectFrame.size.height > 0) ? round(CGRectGetMidY(connectFrame)) : round(CGRectGetMidY(footerView.bounds));
 
     SGRGlyphButton *lyrics = lyricsGlyphIn(footerView);
     lyrics.bounds = CGRectMake(0, 0, 44, 44);
 
-    CGRect connectFrame = SGFrameIn(connect, footerView);
     UIView *share = SGRFindByIdentifier(footerView, @"ShareButtonNowPlayingView", NULL);
     CGFloat targetX = 0;
     if (share && !share.hidden && share.alpha > 0.01) {
@@ -296,6 +325,7 @@ void SGRPlayerFooterUpdate(UIView *playerHost) {
 
     lyrics.center = CGPointMake(targetX, middleY);
     [footerView bringSubviewToFront:lyrics];
+    lyrics.userInteractionEnabled = YES;
     SGRPlayerLyricsChanged();
 
     static dispatch_once_t onceDJ;

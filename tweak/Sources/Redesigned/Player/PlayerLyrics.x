@@ -151,9 +151,43 @@ static CGRect untransformed(UIView *view, UIView *host) {
     return CGRectOffset(frame, -t.tx, -t.ty);
 }
 
+static UIView *currentInfoElement(UIView *host) {
+    if (sg_info.viewIfLoaded) return sg_info.viewIfLoaded;
+    UIView *label = SGRFindByIdentifier(host, @"now-playing-title-label", NULL);
+    if (!label) return nil;
+    UIView *bottom = SGRFindByIdentifier(host, @"npv.bottomStackView", NULL);
+    for (UIView *v = label; v && v != host; v = v.superview) {
+        if (bottom && v.superview == bottom) return v;
+    }
+    return label.superview.superview;
+}
+
+static UIView *currentDurationElement(UIView *host) {
+    if (sg_duration.viewIfLoaded) return sg_duration.viewIfLoaded;
+    UIView *time = SGRFindByIdentifier(host, @"nowplaying-playback-position-progress-bar", NULL)
+                ?: SGRFindByIdentifier(host, @"now-playing-duration-slider", NULL)
+                ?: SGRFindByIdentifier(host, @"time-elapsed-label", NULL);
+    if (!time) return nil;
+    UIView *bottom = SGRFindByIdentifier(host, @"npv.bottomStackView", NULL);
+    for (UIView *v = time; v && v != host; v = v.superview) {
+        if (bottom && v.superview == bottom) return v;
+    }
+    return time.superview.superview;
+}
+
+static UIView *currentTitleElement(UIView *host, UIView *info) {
+    if (sg_titleElement) return sg_titleElement;
+    UIView *label = SGRFindByIdentifier(info ?: host, @"now-playing-title-label", NULL);
+    if (!label) return nil;
+    for (UIView *v = label; v && v != host; v = v.superview) {
+        if ([v.superview isKindOfClass:UIStackView.class]) return v;
+    }
+    return label;
+}
+
 static SGRLyricsLayout layoutIn(UIView *host) {
     SGRLyricsLayout l = {0};
-    UIView *info = sg_info.viewIfLoaded, *duration = sg_duration.viewIfLoaded, *title = sg_titleElement;
+    UIView *info = currentInfoElement(host), *duration = currentDurationElement(host), *title = currentTitleElement(host, info);
     if (!host || host.bounds.size.height < kLivingHeight || !info || !duration) return l;
     CGRect area = SGRPlayerArtworkAreaIn(host), cover = SGRPlayerCoverFrameIn(host);
     if (CGRectIsNull(area) || CGRectIsNull(cover)) return l;
@@ -220,13 +254,13 @@ static void clipTitle(UIView *element, CGFloat width) {
 
 // The unit's row lays its arranged views out after the unit's own pass, so the transforms go on after it.
 static void placeTitleRow(SGRLyricsLayout l) {
-    UIView *info = sg_info.viewIfLoaded;
+    UIView *info = currentInfoElement(sg_host);
     if (!info) return;
     [SGRowIn(info) layoutIfNeeded];
     CGFloat lift = sg_open ? l.lift : 0, shift = sg_open ? l.shift : 0;
     CGAffineTransform rise = CGAffineTransformMakeTranslation(0, round(lift));
     if (!CGAffineTransformEqualToTransform(info.transform, rise)) info.transform = rise;
-    UIView *title = sg_titleElement;
+    UIView *title = currentTitleElement(sg_host, info);
     if (!title) return;
     CGAffineTransform slide = CGAffineTransformMakeTranslation(round(shift), 0);
     if (!CGAffineTransformEqualToTransform(title.transform, slide)) title.transform = slide;
@@ -356,7 +390,12 @@ static void setOpen(BOOL open, BOOL animated) {
 }
 
 void SGRPlayerToggleLyrics(void) {
-    if (!sg_open && !SGRPlayerLyricsAvailable()) return;
+    NSString *trackID = SGKaraokePlayingTrack();
+    if (!sg_open) {
+        if (trackID && !SGKaraokeLinesForTrack(trackID)) {
+            SGKaraokeRequestLyrics(trackID);
+        }
+    }
     setOpen(!sg_open, YES);
 }
 
@@ -454,9 +493,13 @@ static void replace(void) {
     NSString *track = SGURIString(state.track.URI);
     if (!track || [track isEqualToString:_track]) return;
     _track = track;
+    NSString *trackID = [track hasPrefix:@"spotify:track:"] ? [track substringFromIndex:@"spotify:track:".length] : track;
+    if (trackID) {
+        SGKaraokeRequestLyrics(trackID);
+    }
     // Lyrics arrive a moment after the track does, and nothing announces them: the glyph is asked again
     // while they would be coming, and the lines already up wait out the same grace before they go.
-    for (NSNumber *delay in @[@1, @(kLyricsGrace)]) {
+    for (NSNumber *delay in @[@0.5, @1, @(kLyricsGrace)]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             SGRPlayerLyricsChanged();
             if (sg_open && delay.doubleValue >= kLyricsGrace && !SGRPlayerLyricsAvailable()) {
@@ -476,6 +519,9 @@ static SGRPlayerLyricsWatcher *sg_watcher;
     %init;
     sg_watcher = [SGRPlayerLyricsWatcher new];
     SGAddPlayerStateObserver(sg_watcher);
+    [NSNotificationCenter.defaultCenter addObserverForName:@"SGKaraokeLyricsDidUpdateNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        SGRPlayerLyricsChanged();
+    }];
     [NSNotificationCenter.defaultCenter addObserverForName:SGRNowPlayingArtworkDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
         if (!sg_open) return;
         SGRPlayerLyricsOverlay *overlay = objc_getAssociatedObject(sg_host, &kOverlayKey);
