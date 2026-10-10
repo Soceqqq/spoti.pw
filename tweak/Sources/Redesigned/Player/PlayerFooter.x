@@ -40,7 +40,7 @@ static const CGFloat kRowAboveSafeArea = 20, kRowMinBottom = 34;
 // and below them even out instead of all the room opening under them.
 static const CGFloat kControlsShare = 0.3;
 
-static char kConnectKey, kShareKey, kTrimmerKey, kQueueKey, kLyricsGlyphKey, kReachKey, kBottomStackKey;
+static char kConnectKey, kShareKey, kTrimmerKey, kQueueKey, kLyricsGlyphKey, kReachKey, kBottomStackKey, kDJLyricsKey;
 static __weak SGRGlyphButton *sg_lyricsGlyph;
 
 // The view the footer's stack view arranges around `view`.
@@ -104,11 +104,6 @@ static SGRGlyphButton *lyricsGlyphIn(UIView *host) {
         glyph.glyph.tintColor = SGRSecondary();
         glyph.userInteractionEnabled = YES;
         glyph.onTap = ^{ SGRPlayerToggleLyrics(); };
-
-        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:glyph action:@selector(tapped)];
-        tap.cancelsTouchesInView = YES;
-        [glyph addGestureRecognizer:tap];
-
         objc_setAssociatedObject(host, &kLyricsGlyphKey, glyph, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (glyph.superview != host) [host addSubview:glyph];
@@ -254,82 +249,82 @@ static void lowerRow(UIView *row) {
 void SGRPlayerFooterUpdate(UIView *playerHost) {
     if (!playerHost) return;
 
-    // Find the Connect button in the bottom row.
+    // Find the Connect button anywhere in the player view.
     UIView *connect = SGRFindByIdentifier(playerHost, @"Components.ConnectButtonOutputSwitcher", NULL);
-    if (!connect || connect.hidden || connect.alpha < 0.01) return;
-
-    // Locate the footer container in playerHost.
-    UIView *footerView = nil;
-    UIView *bottomStack = SGRFindByIdentifier(playerHost, @"npv.bottomStackView", &kBottomStackKey);
-    if (bottomStack) {
-        for (UIView *v = connect; v && v != playerHost; v = v.superview) {
-            if (v.superview == bottomStack) {
-                // Ensure this is not title or playback controls
-                if (SGRFindByIdentifier(v, @"now-playing-title-label", NULL)) continue;
-                if (SGRFindByIdentifier(v, @"SPTNowPlayingPlayButton", NULL)) continue;
-                footerView = v;
-                break;
-            }
-        }
-    }
-    if (!footerView) {
-        UIView *arranged = arrangedAround(connect, playerHost);
-        if (arranged && arranged.superview) {
-            UIView *row = arranged.superview;
-            footerView = (row.superview && row.superview != playerHost) ? row.superview : row;
-        }
-    }
-    if (!footerView) footerView = connect.superview;
-    if (!footerView) return;
-
-    // In normal playback, the queue button is present inside the footer.
-    // FooterElementsUnit already handles normal playback completely.
-    UIView *queue = SGRFindByIdentifier(footerView, @"QueueButtonNowPlaying", NULL);
-    if (queue && !queue.hidden && queue.alpha > 0.01) {
+    if (!connect || connect.hidden || connect.alpha < 0.01) {
+        // Hide any DJ lyrics button we may have added before.
+        SGRGlyphButton *old = objc_getAssociatedObject(playerHost, &kDJLyricsKey);
+        if (old) old.hidden = YES;
         return;
     }
 
-    // Prefetch lyrics for current track if needed
+    // In normal playback, QueueButtonNowPlaying is present and visible.
+    // FooterElementsUnit handles normal mode completely: the lyrics glyph at kLeading is already placed.
+    // We must NOT add a second button, and must not disturb the stack-view layout.
+    UIView *queue = SGRFindByIdentifier(playerHost, @"QueueButtonNowPlaying", NULL);
+    BOOL isNormalMode = queue && !queue.hidden && queue.alpha > 0.01 && queue.window;
+    if (isNormalMode) {
+        // Hide DJ-specific glyph so it doesn't float over the normal footer.
+        SGRGlyphButton *old = objc_getAssociatedObject(playerHost, &kDJLyricsKey);
+        if (old && !old.hidden) old.hidden = YES;
+        return;
+    }
+
+    // --- DJ mode from here ---
+
+    // Prefetch lyrics for current track if needed.
     NSString *trackID = SGKaraokePlayingTrack();
     if (trackID && !SGKaraokeLinesForTrack(trackID)) {
         SGKaraokeRequestLyrics(trackID);
     }
 
-    // DJ mode: Spotify has Connect on the left, and Share + DJ on the right.
-    // We add the lyrics button in the middle space between Connect and Share/DJ.
-    CGFloat width = footerView.bounds.size.width;
-    if (width < 100) return;
+    // Get or create the DJ lyrics glyph, attached to playerHost — never to any stack view.
+    SGRGlyphButton *lyrics = objc_getAssociatedObject(playerHost, &kDJLyricsKey);
+    if (!lyrics) {
+        lyrics = [SGRGlyphButton buttonWithSymbol:kLyricsSymbol pointSize:kLyricsGlyphSize title:@"Lyrics"];
+        lyrics.glyph.tintColor = SGRSecondary();
+        lyrics.userInteractionEnabled = YES;
+        lyrics.onTap = ^{ SGRPlayerToggleLyrics(); };
+        objc_setAssociatedObject(playerHost, &kDJLyricsKey, lyrics, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Add/reparent to playerHost directly — completely outside any UIStackView.
+    if (lyrics.superview != playerHost) {
+        [playerHost addSubview:lyrics];
+    }
+    lyrics.hidden = NO;
+    [playerHost bringSubviewToFront:lyrics];
+    lyrics.userInteractionEnabled = YES;
 
-    footerView.clipsToBounds = NO;
-    if (bottomStack) bottomStack.clipsToBounds = NO;
+    // Make sure playerHost and any ancestors don't clip the button.
+    playerHost.clipsToBounds = NO;
 
-    CGRect connectFrame = SGFrameIn(connect, footerView);
-    CGFloat middleY = (connectFrame.size.height > 0) ? round(CGRectGetMidY(connectFrame)) : round(CGRectGetMidY(footerView.bounds));
+    // Convert connect position into playerHost coordinates.
+    CGRect connectFrame = [playerHost convertRect:connect.bounds fromView:connect];
+    CGFloat targetY = round(CGRectGetMidY(connectFrame));
+    CGFloat width = playerHost.bounds.size.width;
 
-    SGRGlyphButton *lyrics = lyricsGlyphIn(footerView);
-    lyrics.bounds = CGRectMake(0, 0, 44, 44);
-
-    UIView *share = SGRFindByIdentifier(footerView, @"ShareButtonNowPlayingView", NULL);
-    CGFloat targetX = 0;
+    // Find Share and DJ circle button to compute X (the gap between connect and share).
+    UIView *share = SGRFindByIdentifier(playerHost, @"ShareButtonNowPlayingView", NULL);
+    CGFloat targetX;
     if (share && !share.hidden && share.alpha > 0.01) {
-        CGRect shareFrame = SGFrameIn(share, footerView);
+        CGRect shareFrame = [playerHost convertRect:share.bounds fromView:share];
         targetX = round((CGRectGetMaxX(connectFrame) + CGRectGetMinX(shareFrame)) / 2.0);
     } else {
         targetX = round(width / 2.0);
     }
+    // Safety clamp.
+    if (targetX < 60 || targetX > width - 60) targetX = round(width / 2.0);
 
-    if (targetX < 60 || targetX > width - 60) {
-        targetX = round(width / 2.0);
-    }
+    lyrics.bounds = CGRectMake(0, 0, 44, 44);
+    lyrics.center = CGPointMake(targetX, targetY);
 
-    lyrics.center = CGPointMake(targetX, middleY);
-    [footerView bringSubviewToFront:lyrics];
-    lyrics.userInteractionEnabled = YES;
+    // Update sg_lyricsGlyph so SGRPlayerLyricsChanged() updates this button.
+    sg_lyricsGlyph = lyrics;
     SGRPlayerLyricsChanged();
 
     static dispatch_once_t onceDJ;
     dispatch_once(&onceDJ, ^{
-        SGLog(@"redesign player: DJ footer lyrics button added at (%.0f, %.0f)", targetX, middleY);
+        SGLog(@"redesign player: DJ footer lyrics button on host at (%.0f, %.0f)", targetX, targetY);
     });
 }
 

@@ -8,6 +8,7 @@
 #import "Lyrics.h"
 #import "Shared/LockScreenLyrics/LockScreenLyrics.h"
 #import "Shared/LyricsSources/LyricsSources.h"
+#import "Shared/Player/PlayerState.h"
 #import "Headers/SPTPlayer.h"
 
 static const NSUInteger kKeptTracks = 40;
@@ -212,7 +213,8 @@ id SGKaraokePlayer(void) {
 
 static SPTPlayerState *playerState(void) {
     id player = sg_player;
-    return [player respondsToSelector:@selector(state)] ? [(id<SPTPlayer>)player state] : nil;
+    SPTPlayerState *state = [player respondsToSelector:@selector(state)] ? [(id<SPTPlayer>)player state] : nil;
+    return state ?: SGPlayerState();
 }
 
 NSString *SGKaraokePlayingTrack(void) {

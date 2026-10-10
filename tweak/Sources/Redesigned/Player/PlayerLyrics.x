@@ -187,22 +187,56 @@ static UIView *currentTitleElement(UIView *host, UIView *info) {
 
 static SGRLyricsLayout layoutIn(UIView *host) {
     SGRLyricsLayout l = {0};
+    if (!host || host.bounds.size.height < kLivingHeight) return l;
     UIView *info = currentInfoElement(host), *duration = currentDurationElement(host), *title = currentTitleElement(host, info);
-    if (!host || host.bounds.size.height < kLivingHeight || !info || !duration) return l;
-    CGRect area = SGRPlayerArtworkAreaIn(host), cover = SGRPlayerCoverFrameIn(host);
-    if (CGRectIsNull(area) || CGRectIsNull(cover)) return l;
-    CGRect row = untransformed(info, host), bar = untransformed(duration, host);
+
+    CGFloat screenW = host.bounds.size.width;
+    CGFloat screenH = host.bounds.size.height;
+    CGFloat topSafe = 100.0;
+    UIWindow *window = host.window;
+    if (window && window.safeAreaInsets.top > 0) {
+        topSafe = window.safeAreaInsets.top + 44.0;
+    }
+
+    CGRect row = info ? untransformed(info, host) : CGRectMake(12, screenH * 0.65, screenW - 24, 60);
+    CGRect bar = duration ? untransformed(duration, host) : CGRectMake(24, CGRectGetMaxY(row) + 10, screenW - 48, 40);
+
+    BOOL usedFallbackArea = NO;
+    CGRect area = SGRPlayerArtworkAreaIn(host);
+    if (CGRectIsNull(area) || area.size.width < 100 || area.size.height < 100) {
+        CGFloat areaHeight = MAX(200.0, CGRectGetMinY(row) - topSafe);
+        area = CGRectMake(0, topSafe, screenW, areaHeight);
+        usedFallbackArea = YES;
+    }
+
+    BOOL usedFallbackCover = NO;
+    CGRect cover = SGRPlayerCoverFrameIn(host);
+    if (CGRectIsNull(cover) || cover.size.width < 50 || cover.size.height < 50) {
+        CGFloat side = MIN(screenW - 48.0, area.size.height - 24.0);
+        if (side < 150) side = MIN(screenW - 48.0, 354.0);
+        cover = CGRectMake(round((screenW - side) / 2.0),
+                           round(CGRectGetMinY(area) + (area.size.height - side) / 2.0),
+                           side, side);
+        usedFallbackCover = YES;
+    }
+
     // The thumbnail takes the title's own leading edge, so the two line up down the page.
     CGFloat leading = title ? CGRectGetMinX(untransformed(title, host)) : CGRectGetMinX(area) + SGRSideMargin;
     l.cover = cover;
     l.thumb = CGRectMake(leading, CGRectGetMinY(area) + kThumbTop, kThumbSide, kThumbSide);
     // Beside the thumbnail when the title can be moved clear of it, under it when it cannot be found.
-    CGFloat top = title ? CGRectGetMidY(l.thumb) - row.size.height / 2 : CGRectGetMaxY(l.thumb) + SGRGrid;
+    CGFloat top = title ? CGRectGetMidY(l.thumb) - row.size.height / 2.0 : CGRectGetMaxY(l.thumb) + SGRGrid;
     l.lift = top - CGRectGetMinY(row);
     l.shift = title ? kThumbSide + kThumbGap : 0;
     CGFloat lines = MAX(CGRectGetMaxY(l.thumb), top + row.size.height) + kLyricsTop;
-    l.stage = CGRectMake(CGRectGetMinX(area), lines, area.size.width, CGRectGetMinY(bar) - kLyricsBottom - lines);
-    l.ok = l.stage.size.height > kLivingHeight / 2 && l.lift < 0;
+    CGFloat barTop = CGRectGetMinY(bar);
+    if (barTop <= lines + 50) {
+        barTop = screenH - 180.0;
+    }
+    l.stage = CGRectMake(CGRectGetMinX(area), lines, area.size.width, barTop - kLyricsBottom - lines);
+    BOOL stageOK = l.stage.size.height > 80 && l.stage.size.width > 100;
+    // When we computed the geometry ourselves (DJ mode fallback), trust it even if l.lift >= 0.
+    l.ok = stageOK && (l.lift < 0 || (usedFallbackArea && usedFallbackCover));
     return l;
 }
 
@@ -303,7 +337,7 @@ static void place(SGRPlayerLyricsOverlay *overlay, UIView *host, SGRLyricsLayout
 static CGAffineTransform thumbTransform(SGRLyricsLayout l) {
     CGFloat scale = l.cover.size.width > 0 ? l.thumb.size.width / l.cover.size.width : 1;
     CGAffineTransform move = CGAffineTransformMakeTranslation(round(CGRectGetMidX(l.thumb) - CGRectGetMidX(l.cover)),
-                                                             round(CGRectGetMidY(l.thumb) - CGRectGetMidY(l.cover)));
+                                                               round(CGRectGetMidY(l.thumb) - CGRectGetMidY(l.cover)));
     return CGAffineTransformConcat(CGAffineTransformMakeScale(scale, scale), move);
 }
 
@@ -313,6 +347,10 @@ static CGFloat thumbRadius(SGRLyricsLayout l, BOOL open) {
     if (!open) return SGRRadiusArtwork;
     CGFloat scale = l.cover.size.width > 0 ? l.thumb.size.width / l.cover.size.width : 1;
     return scale > 0 ? SGRRadiusCover / scale : SGRRadiusArtwork;
+}
+
+static UIView *activeCoverView(void) {
+    return SGRPlayerCoverList() ?: showingTilt();
 }
 
 static void setOpen(BOOL open, BOOL animated) {
@@ -327,12 +365,17 @@ static void setOpen(BOOL open, BOOL animated) {
         SGLog(@"redesign player: the lyrics have nowhere to go (stage %.0fx%.0f, lift %.0f)", l.stage.size.width, l.stage.size.height, l.lift);
         return;
     }
-    // The thumbnail is the Kit's picture drawn again, and Spotify's cover goes as it appears: without a
-    // picture there would be a hole where the cover was, so the cover stays and the lyrics wait.
     UIImage *picture = SGRNowPlayingArtwork(NULL, NULL);
-    if (open && !picture) {
-        SGLog(@"redesign player: no artwork read yet, the lyrics stay down");
-        return;
+    if (!picture) {
+        UIView *cov = activeCoverView();
+        if ([cov isKindOfClass:UIImageView.class]) picture = ((UIImageView *)cov).image;
+        if (!picture) {
+            SGForEachView(host, ^(UIView *v) {
+                if (!picture && [v isKindOfClass:UIImageView.class] && v.bounds.size.width > 80) {
+                    picture = ((UIImageView *)v).image;
+                }
+            });
+        }
     }
     sg_open = open;
     SGRPlayerLyricsChanged();
@@ -344,14 +387,12 @@ static void setOpen(BOOL open, BOOL animated) {
     overlay.thumb.transform = open ? CGAffineTransformIdentity : away;
     overlay.cover.layer.cornerRadius = thumbRadius(l, !open);
     if (open) {
-        overlay.cover.image = SGRNowPlayingArtwork(NULL, NULL);
+        overlay.cover.image = picture;
         overlay.stage.alpha = 0;
         overlay.stage.transform = CGAffineTransformMakeScale(kLyricsEnterScale, kLyricsEnterScale);
         [overlay lyrics];
-        // Spotify's cover goes the moment the redesign's own takes its place: the same picture at the
-        // same size with the same corners, so there is nothing to see in the swap. Coming back it waits
-        // for the thumbnail to land on it, or the two would be on screen at once, one of them half size.
-        SGRPlayerCoverList().alpha = 0;
+        UIView *coverView = activeCoverView();
+        if (coverView) coverView.alpha = 0;
     }
 
     void (^move)(void) = ^{
@@ -368,7 +409,8 @@ static void setOpen(BOOL open, BOOL animated) {
     void (^settled)(BOOL) = ^(BOOL finished) {
         sg_moving = NO;
         if (sg_open) return;   // opened again while it was going away
-        SGRPlayerCoverList().alpha = 1;
+        UIView *coverView = activeCoverView();
+        if (coverView) coverView.alpha = 1;
         [overlay removeFromSuperview];
     };
 
@@ -415,7 +457,8 @@ static void replace(void) {
     overlay.thumb.transform = thumbTransform(l);
     overlay.cover.layer.cornerRadius = thumbRadius(l, YES);
     overlay.lyrics.frame = overlay.stage.bounds;
-    SGRPlayerCoverList().alpha = 0;
+    UIView *coverView = activeCoverView();
+    if (coverView) coverView.alpha = 0;
 }
 
 #pragma mark - the units

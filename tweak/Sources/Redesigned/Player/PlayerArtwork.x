@@ -47,7 +47,9 @@ static BOOL inCoverCell(UIView *tilt) {
     static Class cell;
     if (!cell) cell = NSClassFromString(@"_TtC28NowPlaying_ContentLayersImpl16CoverArtCellImpl");
     for (UIView *v = tilt.superview; v; v = v.superview) {
-        if ([v isKindOfClass:cell]) return YES;
+        if (cell && [v isKindOfClass:cell]) return YES;
+        NSString *cls = NSStringFromClass(v.class);
+        if ([cls containsString:@"CoverArt"] || [cls containsString:@"DJ"] || [cls containsString:@"ContentLayer"]) return YES;
     }
     return NO;
 }
@@ -75,6 +77,27 @@ static UIView *showingTilt(void) {
     return nil;
 }
 
+static UIView *fallbackCoverIn(UIView *host) {
+    if (!host) return nil;
+    __block UIView *found = nil;
+    __block CGFloat maxArea = 0;
+    SGForEachView(host, ^(UIView *v) {
+        if (v.hidden || v.alpha < 0.01 || !v.window) return;
+        if ([v isKindOfClass:UIImageView.class] || [NSStringFromClass(v.class) containsString:@"Cover"] || [NSStringFromClass(v.class) containsString:@"Tilt"]) {
+            CGRect frame = [host convertRect:v.bounds fromView:v];
+            if (frame.origin.y >= 30 && frame.origin.y < host.bounds.size.height * 0.65 &&
+                frame.size.width >= 120 && frame.size.height >= 120) {
+                CGFloat area = frame.size.width * frame.size.height;
+                if (area > maxArea) {
+                    maxArea = area;
+                    found = v;
+                }
+            }
+        }
+    });
+    return found;
+}
+
 UIView *SGRPlayerCoverList(void) {
     for (UIView *v = showingTilt(); v; v = v.superview) {
         if ([v isKindOfClass:UICollectionView.class]) return v;
@@ -86,17 +109,28 @@ CGRect SGRPlayerCoverFrameIn(UIView *host) {
     UIView *tilt = showingTilt();
     UIView *cover = coverIn(tilt);
     // The cover's own transform is the paused shrink, which is what the eye sees it at.
-    return cover && host ? [host convertRect:cover.bounds fromView:cover] : CGRectNull;
+    if (cover && host) return [host convertRect:cover.bounds fromView:cover];
+    UIView *fallback = fallbackCoverIn(host);
+    if (fallback && host) return [host convertRect:fallback.bounds fromView:fallback];
+    return CGRectNull;
 }
 
 CGRect SGRPlayerArtworkAreaIn(UIView *host) {
     UIView *tilt = showingTilt();
-    if (!tilt || !host) return CGRectNull;
-    // The band is the first view over the cover as wide as the player: the cover sits inset inside it
-    // (01.txt:33-36, CoverArtCellImpl > UIView {0, 110, 402, 466.67} > UIView {24, 8, ...} > the tilt view).
-    for (UIView *v = tilt.superview; v; v = v.superview) {
-        if (v == host) break;
-        if (v.bounds.size.width >= host.bounds.size.width - 1) return [host convertRect:v.bounds fromView:v];
+    if (tilt && host) {
+        // The band is the first view over the cover as wide as the player: the cover sits inset inside it
+        // (01.txt:33-36, CoverArtCellImpl > UIView {0, 110, 402, 466.67} > UIView {24, 8, ...} > the tilt view).
+        for (UIView *v = tilt.superview; v; v = v.superview) {
+            if (v == host) break;
+            if (v.bounds.size.width >= host.bounds.size.width - 1) return [host convertRect:v.bounds fromView:v];
+        }
+    }
+    UIView *fallback = fallbackCoverIn(host);
+    if (fallback && host) {
+        for (UIView *v = fallback.superview; v; v = v.superview) {
+            if (v == host) break;
+            if (v.bounds.size.width >= host.bounds.size.width - 1) return [host convertRect:v.bounds fromView:v];
+        }
     }
     return CGRectNull;
 }
